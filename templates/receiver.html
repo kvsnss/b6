@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0">
+
+    <title>Raspberry Pi Medical Receiver</title>
+
+    <link rel="stylesheet"
+          href="{{ url_for('static', filename='receiver.css') }}">
+
+</head>
+
+<body>
+
+<div class="container">
+
+    <h1>
+        Raspberry Pi Medical Data Receiver
+    </h1>
+
+    <p class="subtitle">
+        AES-256 | DWT | ROI | RDH | IDWT
+    </p>
+
+
+    <!-- STATUS MESSAGE -->
+
+    {% if status %}
+
+    <div class="status {% if error %}error{% endif %}">
+
+        {{ status }}
+
+    </div>
+
+    {% endif %}
+
+
+    <!-- RECEIVED STEGO FILE -->
+
+    {% if filename %}
+
+    <div class="info">
+
+        <strong>Received Stego File:</strong>
+
+        <span>
+            {{ filename }}
+        </span>
+
+    </div>
+
+    {% endif %}
+
+
+    <!-- STEGO IMAGE -->
+
+    {% if stego_available and filename %}
+
+    <div class="image-section">
+
+        <h2>
+            Received Stego Medical Image
+        </h2>
+
+        <img
+            src="{{ url_for('received_image', filename=filename) }}"
+            alt="Received Stego Medical Image"
+        >
+
+    </div>
+
+    {% endif %}
+
+
+    <!-- EXTRACTION SUCCESS -->
+
+    {% if extracted %}
+
+    <div class="status">
+
+        ✓ Encrypted medical data extracted successfully.
+
+    </div>
+
+
+    <!-- RECOVERED ORIGINAL IMAGE -->
+
+    {% if recovered_image %}
+
+    <div class="image-section">
+
+        <h2>
+            Recovered Original Medical Image
+        </h2>
+
+        <img
+            src="{{ recovered_image }}"
+            alt="Recovered Original Medical Image"
+        >
+
+    </div>
+
+    {% endif %}
+
+
+    <!-- PASSWORD FORM -->
+
+    <form
+        action="{{ url_for('decrypt') }}"
+        method="POST"
+    >
+
+        <label for="password">
+            Enter Password
+        </label>
+
+        <input
+            type="password"
+            id="password"
+            name="password"
+            placeholder="Enter AES-256 password"
+            required
+        >
+
+        <button type="submit">
+
+            Extract & Decrypt Patient Data
+
+        </button>
+
+    </form>
+
+    {% endif %}
+
+
+    <!-- DECRYPTED DATA -->
+
+    {% if decrypted_data %}
+
+    <div class="status">
+
+        ✓ AES-256 Decryption Successful
+
+    </div>
+
+
+    <h2>
+        Recovered Patient Details
+    </h2>
+
+
+    <div class="patient-data">
+
+        <pre>{{ decrypted_data }}</pre>
+
+    </div>
+
+    {% endif %}
+
+</div>
+
+</body>
+
+</html>
+

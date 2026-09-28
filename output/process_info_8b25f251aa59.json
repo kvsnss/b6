@@ -1,0 +1,23 @@
+{
+  "process_id": "8b25f251aa59",
+  "encryption": "AES-256",
+  "transform": "Integer Haar DWT",
+  "dwt_bands": [
+    "LL",
+    "LH",
+    "HL",
+    "HH"
+  ],
+  "embedding_band": "HH",
+  "embedding_region": "Non-ROI",
+  "encrypted_package_bytes": 208,
+  "embedded_bits": 1664,
+  "stego_minimum": 0,
+  "stego_maximum": 225,
+  "MSE_original_vs_stego": 0.0016629755911031802,
+  "PSNR_original_vs_stego": 75.921944861084,
+  "SSIM_original_vs_stego": 0.9999840183257461,
+  "MSE_original_vs_recovered": 0.0,
+  "PSNR_original_vs_recovered": Infinity,
+  "exact_recovery": true
+}

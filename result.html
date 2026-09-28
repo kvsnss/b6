@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0">
+
+    <title>
+        Secure Medical Data Transmission
+    </title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('style') }}"
+    >
+
+</head>
+
+
+<body>
+
+<div class="container">
+
+    <!-- ================================================= -->
+    <!-- TITLE -->
+    <!-- ================================================= -->
+
+    <h1>
+        Secure Medical Data Transmission
+    </h1>
+
+
+    <!-- ================================================= -->
+    <!-- SUCCESS MESSAGE -->
+    <!-- ================================================= -->
+
+    {% if status %}
+
+    <div class="success-box">
+
+        <h2>
+            {{ status }}
+        </h2>
+
+        <p>
+            Patient data has been encrypted using
+            AES-256 and embedded into the medical
+            image using DWT-based reversible data hiding.
+        </p>
+
+    </div>
+
+    {% endif %}
+
+
+    <!-- ================================================= -->
+    <!-- ENCRYPTED DATA -->
+    <!-- ================================================= -->
+
+    {% if encrypted_data %}
+
+    <div class="section">
+
+        <h2>
+            Encrypted Data
+        </h2>
+
+        <textarea
+            class="encrypted-box"
+            readonly
+        >{{ encrypted_data }}</textarea>
+
+    </div>
+
+    {% endif %}
+
+
+    <!-- ================================================= -->
+    <!-- ONLY STEGO IMAGE IS DISPLAYED -->
+    <!-- ================================================= -->
+
+    {% if stego_filename %}
+
+    <div class="section">
+
+        <h2>
+            Final Stego Medical Image
+        </h2>
+
+        <div class="stego-container">
+
+            <img
+                src="{{ url_for(
+                    'output_file',
+                    filename=stego_filename
+                ) }}"
+                alt="Stego Medical Image"
+                class="stego-image"
+            >
+
+        </div>
+
+    </div>
+
+    {% endif %}
+
+
+    <!-- ================================================= -->
+    <!-- IMAGE QUALITY METRICS -->
+    <!-- ================================================= -->
+
+    {% if mse is not none %}
+
+    <div class="section">
+
+        <h2>
+            Image Quality Evaluation
+        </h2>
+
+
+        <div class="metric-box">
+
+            <p>
+                <strong>MSE:</strong>
+                {{ mse }}
+            </p>
+
+            <p>
+                <strong>PSNR:</strong>
+                {{ psnr }} dB
+            </p>
+
+            <p>
+                <strong>SSIM:</strong>
+                {{ ssim }}
+            </p>
+
+
+            {% if exact_recovery %}
+
+            <p>
+                <strong>Exact Recovery:</strong>
+                Yes
+            </p>
+
+            {% else %}
+
+            <p>
+                <strong>Exact Recovery:</strong>
+                Not Verified
+            </p>
+
+            {% endif %}
+
+        </div>
+
+    </div>
+
+    {% endif %}
+
+
+</div>
+
+</body>
+
+</html>

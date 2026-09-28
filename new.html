@@ -1,0 +1,162 @@
+<!-- ================================================= -->
+    <!-- ORIGINAL PATIENT DATA -->
+    <!-- ================================================= -->
+
+    <h2>Original Patient Data</h2>
+
+    <textarea
+        rows="10"
+        readonly>{{ original_data }}</textarea>
+<!-- ================================================= -->
+    <!-- ORIGINAL MEDICAL IMAGE -->
+    <!-- ================================================= -->
+
+    <h2>Original Medical Image</h2>
+
+    <div class="image-box">
+
+        <img
+            src="{{ original_image }}"
+            alt="Original Medical Image">
+
+    </div>
+
+
+    <!-- ================================================= -->
+    <!-- DWT IMAGES -->
+    <!-- ================================================= -->
+
+    <h2>DWT Decomposition</h2>
+
+    <p>
+        The medical image is decomposed using Haar Discrete
+        Wavelet Transform (DWT).
+    </p>
+
+
+    <div class="image-grid">
+
+
+        <!-- LL -->
+
+        <div class="image-card">
+
+            <h3>LL - Approximation</h3>
+
+            <img
+                src="{{ dwt_ll }}"
+                alt="DWT LL">
+
+        </div>
+
+
+        <!-- LH -->
+
+        <div class="image-card">
+
+            <h3>LH - Horizontal Detail</h3>
+
+            <img
+                src="{{ dwt_lh }}"
+                alt="DWT LH">
+
+        </div>
+
+
+        <!-- HL -->
+
+        <div class="image-card">
+
+            <h3>HL - Vertical Detail</h3>
+
+            <img
+                src="{{ dwt_hl }}"
+                alt="DWT HL">
+
+        </div>
+
+
+        <!-- HH -->
+
+        <div class="image-card">
+
+            <h3>HH - Diagonal Detail</h3>
+
+            <img
+                src="{{ dwt_hh }}"
+                alt="DWT HH">
+
+        </div>
+
+    </div>
+
+
+    <!-- ================================================= -->
+    <!-- ROI -->
+    <!-- ================================================= -->
+
+    <h2>ROI Protection</h2>
+
+    <p>
+        The Region of Interest (ROI) is protected from
+        embedding to preserve important medical information.
+    </p>
+
+    <div class="image-box">
+
+        <img
+            src="{{ roi_image }}"
+            alt="ROI Image">
+
+    </div>
+
+
+    <!-- ================================================= -->
+    <!-- NON ROI -->
+    <!-- ================================================= -->
+
+    <h2>Non-ROI Region</h2>
+
+    <p>
+        The encrypted patient information is embedded
+        in the non-ROI region.
+    </p>
+
+    <div class="image-box">
+
+        <img
+            src="{{ non_roi_image }}"
+            alt="Non ROI Image">
+
+    </div>
+
+
+    <!-- ================================================= -->
+    <!-- ENCRYPTED DATA -->
+    <!-- ================================================= -->
+
+    <h2>Encrypted Data</h2>
+
+    <textarea
+        rows="8"
+        readonly>{{ encrypted_data }}</textarea>
+
+
+    <!-- ================================================= -->
+    <!-- RECOVERED DATA in result.html -->
+    <!-- ================================================= -->
+
+    {% if decrypted_data %}
+
+        <h2 class="decrypted-title">
+            Decryption Successful
+        </h2>
+
+        <h2>Recovered Patient Data</h2>
+
+        <textarea
+            rows="10"
+            readonly>{{ decrypted_data }}</textarea>
+
+    {% endif %}
+
