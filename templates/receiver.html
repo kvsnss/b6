@@ -5,19 +5,30 @@
 
     <meta charset="UTF-8">
 
-    <meta name="viewport"
-          content="width=device-width, initial-scale=1.0">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
 
-    <title>Raspberry Pi Medical Receiver</title>
+    <title>
+        Raspberry Pi Medical Receiver
+    </title>
 
-    <link rel="stylesheet"
-          href="{{ url_for('static', filename='receiver.css') }}">
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', filename='receiver.css') }}"
+    >
 
 </head>
+
 
 <body>
 
 <div class="container">
+
+    <!-- =================================================
+         HEADER
+         ================================================= -->
 
     <h1>
         Raspberry Pi Medical Data Receiver
@@ -28,39 +39,118 @@
     </p>
 
 
-    <!-- STATUS MESSAGE -->
+    <!-- =================================================
+         STATUS
+         ================================================= -->
 
     {% if status %}
 
-    <div class="status {% if error %}error{% endif %}">
-
+    <div class="status">
         {{ status }}
-
     </div>
 
     {% endif %}
 
 
-    <!-- RECEIVED STEGO FILE -->
+    <!-- =================================================
+         ERROR
+         ================================================= -->
+
+    {% if error %}
+
+    <div class="error">
+        {{ error }}
+    </div>
+
+    {% endif %}
+
+
+    <!-- =================================================
+         RECEIVED FILES
+         ================================================= -->
+
+    <div class="section">
+
+        <h2>
+            Received Files
+        </h2>
+
+        <p>
+            The Raspberry Pi receiver has access to the
+            files stored in the
+            <strong>received</strong> folder.
+        </p>
+
+        <div class="file-list">
+
+            <p>
+                ✓ <strong>stego_image.png</strong>
+            </p>
+
+            <p>
+                ✓ <strong>original_image.png</strong>
+            </p>
+
+            <p>
+                ✓ <strong>metadata.json</strong>
+            </p>
+
+        </div>
+
+    </div>
+
+
+    <!-- =================================================
+         PROCESS RECEIVED IMAGE
+         ================================================= -->
+
+    <div class="image-section">
+
+        <h2>
+            Reversible Data Extraction
+        </h2>
+
+        <p>
+            The received stego medical image is processed
+            using DWT-based reversible data hiding.
+        </p>
+
+        <p>
+            The encrypted medical payload is extracted
+            and the original medical image is recovered.
+        </p>
+
+
+        <form
+            action="{{ url_for('process') }}"
+            method="POST"
+        >
+
+            <button type="submit">
+                Process Received Stego Image
+            </button>
+
+        </form>
+
+    </div>
+
+
+    <!-- =================================================
+         STEGO IMAGE
+         ================================================= -->
 
     {% if filename %}
 
     <div class="info">
 
-        <strong>Received Stego File:</strong>
+        <strong>
+            Processed Stego File:
+        </strong>
 
-        <span>
-            {{ filename }}
-        </span>
+        {{ filename }}
 
     </div>
 
-    {% endif %}
-
-
-    <!-- STEGO IMAGE -->
-
-    {% if stego_available and filename %}
 
     <div class="image-section">
 
@@ -78,7 +168,9 @@
     {% endif %}
 
 
-    <!-- EXTRACTION SUCCESS -->
+    <!-- =================================================
+         EXTRACTION RESULT
+         ================================================= -->
 
     {% if extracted %}
 
@@ -89,7 +181,9 @@
     </div>
 
 
-    <!-- RECOVERED ORIGINAL IMAGE -->
+    <!-- =================================================
+         RECOVERED IMAGE
+         ================================================= -->
 
     {% if recovered_image %}
 
@@ -109,37 +203,121 @@
     {% endif %}
 
 
-    <!-- PASSWORD FORM -->
+    <!-- =================================================
+         IMAGE RECOVERY METRICS
+         ================================================= -->
 
-    <form
-        action="{{ url_for('decrypt') }}"
-        method="POST"
-    >
+    {% if metrics %}
 
-        <label for="password">
-            Enter Password
-        </label>
+    <div class="section">
 
-        <input
-            type="password"
-            id="password"
-            name="password"
-            placeholder="Enter AES-256 password"
-            required
-        >
+        <h2>
+            Receiver Image Recovery Metrics
+        </h2>
 
-        <button type="submit">
+        <div class="metric-box">
 
-            Extract & Decrypt Patient Data
+            <p>
+                <strong>MSE:</strong>
+                {{ metrics.mse }}
+            </p>
 
-        </button>
+            <p>
+                <strong>PSNR:</strong>
+                {{ metrics.psnr }} dB
+            </p>
 
-    </form>
+            <p>
+                <strong>SSIM:</strong>
+                {{ metrics.ssim }}
+            </p>
+
+            <p>
+                <strong>Exact Recovery:</strong>
+
+                {% if metrics.exact_recovery %}
+                    Yes
+                {% else %}
+                    No
+                {% endif %}
+
+            </p>
+
+            <p>
+                <strong>Different Pixels:</strong>
+                {{ metrics.different_pixels }}
+            </p>
+
+            <p>
+                <strong>Total Pixels:</strong>
+                {{ metrics.total_pixels }}
+            </p>
+
+            <p>
+                <strong>Pixel Error Rate:</strong>
+                {{ metrics.pixel_error_rate }}
+            </p>
+
+        </div>
+
+    </div>
 
     {% endif %}
 
 
-    <!-- DECRYPTED DATA -->
+    <!-- =================================================
+         DECRYPTION
+         ================================================= -->
+
+    <div class="image-section">
+
+        <h2>
+            AES-256 Patient Data Decryption
+        </h2>
+
+        <p>
+            Enter the same password that was used during
+            encryption at the sender.
+        </p>
+
+
+        <form
+            action="{{ url_for('decrypt_route') }}"
+            method="POST"
+        >
+
+            <label for="password">
+
+                AES-256 Password
+
+            </label>
+
+
+            <input
+                type="password"
+                id="password"
+                name="password"
+                placeholder="Enter encryption password"
+                required
+            >
+
+
+            <button type="submit">
+
+                Decrypt Patient Data
+
+            </button>
+
+        </form>
+
+    </div>
+
+    {% endif %}
+
+
+    <!-- =================================================
+         DECRYPTED DATA
+         ================================================= -->
 
     {% if decrypted_data %}
 
@@ -150,18 +328,23 @@
     </div>
 
 
-    <h2>
-        Recovered Patient Details
-    </h2>
+    <div class="section">
+
+        <h2>
+            Recovered Patient Details
+        </h2>
 
 
-    <div class="patient-data">
+        <div class="patient-data">
 
-        <pre>{{ decrypted_data }}</pre>
+            <pre>{{ decrypted_data }}</pre>
+
+        </div>
 
     </div>
 
     {% endif %}
+
 
 </div>
 
