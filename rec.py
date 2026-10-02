@@ -1,411 +1,429 @@
+import os
+import json
+import cv2
+import numpy as np
+
 from flask import (
     Flask,
-    request,
     render_template,
-    send_from_directory
+    request,
+    send_from_directory,
+    redirect,
+    url_for
 )
 
-from werkzeug.utils import secure_filename
-
-from aes import decrypt_data
 from rrdh import extract_payload
-
-import os
-import base64
+from aes import decrypt_data
 
 
-# FLASK APPLICATION
-# =========================================================
+# ============================================================
+# FLASK CONFIGURATION
+# ============================================================
 
-app = Flask(
-    __name__
-)
+app = Flask(__name__)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+RECEIVED_FOLDER = os.path.join(BASE_DIR, "received")
+RECOVERED_FOLDER = os.path.join(BASE_DIR, "recovered")
+
+os.makedirs(RECEIVED_FOLDER, exist_ok=True)
+os.makedirs(RECOVERED_FOLDER, exist_ok=True)
 
 
-# =========================================================
-# FOLDERS
-# =========================================================
+# ============================================================
+# FILE NAMES
+# ============================================================
 
-RECEIVED_FOLDER = "received"
-RECOVERED_FOLDER = "recovered"
+STEGO_FILENAME = "stego_image.png"
+METADATA_FILENAME = "metadata.json"
+RECOVERED_FILENAME = "recovered_image.png"
+ORIGINAL_FILENAME = "original_image.png"
 
 
-os.makedirs(
+# ============================================================
+# FILE PATHS
+# ============================================================
+
+STEGO_PATH = os.path.join(
     RECEIVED_FOLDER,
-    exist_ok=True
+    STEGO_FILENAME
 )
 
-os.makedirs(
+METADATA_PATH = os.path.join(
+    RECEIVED_FOLDER,
+    METADATA_FILENAME
+)
+
+ORIGINAL_IMAGE_PATH = os.path.join(
+    RECEIVED_FOLDER,
+    ORIGINAL_FILENAME
+)
+
+RECOVERED_PATH = os.path.join(
     RECOVERED_FOLDER,
-    exist_ok=True
+    RECOVERED_FILENAME
 )
 
 
-# =========================================================
-# RECEIVER STORAGE
-# =========================================================
+# ============================================================
+# GLOBAL VARIABLES
+# ============================================================
 
+last_encrypted_package = None
 last_salt = None
 last_iv = None
 last_ciphertext = None
 
-last_stego_path = None
-last_filename = None
+decrypted_patient_data = None
 
-last_recovered_path = None
+metrics = None
+
+extraction_error = None
+decryption_error = None
 
 
-# =========================================================
-# HOME
-# =========================================================
+# ============================================================
+# IMAGE METRICS
+# ============================================================
 
-@app.route("/")
-def home():
+def calculate_mse(reference, test):
 
-    return render_template(
+    reference = reference.astype(np.float64)
+    test = test.astype(np.float64)
 
-        "receiver.html",
-
-        status=(
-            "Receiver is running. "
-            "Waiting for stego image..."
-        ),
-
-        error=False,
-
-        filename=None,
-
-        stego_available=False,
-
-        extracted=False,
-
-        decrypted_data=None,
-
-        recovered_image=None
+    return float(
+        np.mean((reference - test) ** 2)
     )
 
 
-# =========================================================
-# RECEIVE STEGO IMAGE
-# =========================================================
+def calculate_psnr(reference, test):
 
-@app.route(
-    "/receive",
-    methods=["POST"]
-)
-def receive():
+    mse = calculate_mse(reference, test)
 
+    if mse == 0:
+        return float("inf")
+
+    return float(
+        10 * np.log10((255.0 ** 2) / mse)
+    )
+
+
+def calculate_ssim(reference, test):
+
+    try:
+        from skimage.metrics import structural_similarity
+
+        reference = reference.astype(np.uint8)
+        test = test.astype(np.uint8)
+
+        return float(
+            structural_similarity(
+                reference,
+                test,
+                data_range=255
+            )
+        )
+
+    except ImportError:
+        return None
+
+
+def calculate_exact_recovery(reference, recovered):
+
+    if reference.shape != recovered.shape:
+        return False
+
+    return bool(
+        np.array_equal(reference, recovered)
+    )
+
+
+def calculate_pixel_error_rate(reference, recovered):
+
+    if reference.shape != recovered.shape:
+        return 1.0
+
+    different_pixels = np.count_nonzero(
+        reference != recovered
+    )
+
+    total_pixels = reference.size
+
+    if total_pixels == 0:
+        return 0.0
+
+    return float(
+        different_pixels / total_pixels
+    )
+
+
+def evaluate_recovery(original_path, recovered_path):
+
+    original = cv2.imread(
+        original_path,
+        cv2.IMREAD_GRAYSCALE
+    )
+
+    recovered = cv2.imread(
+        recovered_path,
+        cv2.IMREAD_GRAYSCALE
+    )
+
+    if original is None:
+        raise ValueError(
+            "Original image could not be loaded."
+        )
+
+    if recovered is None:
+        raise ValueError(
+            "Recovered image could not be loaded."
+        )
+
+    if original.shape != recovered.shape:
+        raise ValueError(
+            f"Image dimensions do not match. "
+            f"Original: {original.shape}, "
+            f"Recovered: {recovered.shape}"
+        )
+
+    mse = calculate_mse(
+        original,
+        recovered
+    )
+
+    psnr = calculate_psnr(
+        original,
+        recovered
+    )
+
+    ssim = calculate_ssim(
+        original,
+        recovered
+    )
+
+    exact = calculate_exact_recovery(
+        original,
+        recovered
+    )
+
+    different_pixels = int(
+        np.count_nonzero(
+            original != recovered
+        )
+    )
+
+    total_pixels = int(
+        original.size
+    )
+
+    pixel_error_rate = calculate_pixel_error_rate(
+        original,
+        recovered
+    )
+
+    return {
+        "MSE": mse,
+        "PSNR": psnr,
+        "SSIM": ssim,
+        "Exact Recovery": exact,
+        "Different Pixels": different_pixels,
+        "Total Pixels": total_pixels,
+        "Pixel Error Rate": pixel_error_rate
+    }
+
+
+# ============================================================
+# LOAD RDH METADATA
+# ============================================================
+
+def load_rdh_metadata():
+
+    if not os.path.exists(METADATA_PATH):
+
+        raise FileNotFoundError(
+            "RDH metadata not found.\n"
+            f"Expected location:\n{METADATA_PATH}\n\n"
+            "Make sure metadata.json belongs to "
+            "the same stego image."
+        )
+
+    with open(
+        METADATA_PATH,
+        "r",
+        encoding="utf-8"
+    ) as f:
+
+        metadata = json.load(f)
+
+    if not isinstance(metadata, dict):
+
+        raise ValueError(
+            "Invalid RDH metadata format."
+        )
+
+    required_fields = [
+        "positions",
+        "original_values",
+        "bit_length",
+        "payload_bytes"
+    ]
+
+    for field in required_fields:
+
+        if field not in metadata:
+
+            raise ValueError(
+                f"RDH metadata does not contain "
+                f"'{field}'."
+            )
+
+    if len(metadata["positions"]) != len(
+        metadata["original_values"]
+    ):
+
+        raise ValueError(
+            "RDH metadata is inconsistent: "
+            "positions and original_values "
+            "have different lengths."
+        )
+
+    if int(metadata["bit_length"]) != len(
+        metadata["positions"]
+    ):
+
+        raise ValueError(
+            "RDH metadata is inconsistent: "
+            "bit_length does not match positions."
+        )
+
+    return metadata
+
+
+# ============================================================
+# EXTRACT PAYLOAD
+# ============================================================
+
+def perform_extraction():
+
+    global last_encrypted_package
     global last_salt
     global last_iv
     global last_ciphertext
-    global last_stego_path
-    global last_filename
-    global last_recovered_path
+    global metrics
+    global extraction_error
 
+    extraction_error = None
+    metrics = None
+
+    if not os.path.exists(STEGO_PATH):
+
+        extraction_error = (
+            "Received stego image not found."
+        )
+
+        return False
 
     try:
 
-        # -------------------------------------------------
-        # CHECK IMAGE
-        # -------------------------------------------------
-
-        if "stego_image" not in request.files:
-
-            return render_template(
-
-                "receiver.html",
-
-                status=(
-                    "No stego image was received."
-                ),
-
-                error=True,
-
-                filename=None,
-
-                stego_available=False,
-
-                extracted=False,
-
-                decrypted_data=None,
-
-                recovered_image=None
-
-            ), 400
-
-
-        image = request.files[
-            "stego_image"
-        ]
-
-
-        if image.filename == "":
-
-            return render_template(
-
-                "receiver.html",
-
-                status=(
-                    "Invalid image filename."
-                ),
-
-                error=True,
-
-                filename=None,
-
-                stego_available=False,
-
-                extracted=False,
-
-                decrypted_data=None,
-
-                recovered_image=None
-
-            ), 400
-
-
-        # -------------------------------------------------
-        # GET PAYLOAD SIZE
-        # -------------------------------------------------
-
-        payload_size = request.form.get(
-            "payload_size"
-        )
-
-
-        if payload_size is None:
-
-            return render_template(
-
-                "receiver.html",
-
-                status=(
-                    "Payload size was not "
-                    "provided by transmitter."
-                ),
-
-                error=True,
-
-                filename=None,
-
-                stego_available=False,
-
-                extracted=False,
-
-                decrypted_data=None,
-
-                recovered_image=None
-
-            ), 400
-
-
-        payload_size = int(
-            payload_size
-        )
-
-
-        # -------------------------------------------------
-        # GET RDH METADATA
-        # -------------------------------------------------
-
-        peak = int(
-            request.form.get(
-                "rdh_peak"
-            )
-        )
-
-        zero = int(
-            request.form.get(
-                "rdh_zero"
-            )
-        )
-
-        bit_length = int(
-            request.form.get(
-                "rdh_bit_length"
-            )
-        )
-
-
-        metadata = {
-
-            "peak": peak,
-
-            "zero": zero,
-
-            "bit_length": bit_length
-        }
-
-
-        # -------------------------------------------------
-        # SECURE FILENAME
-        # -------------------------------------------------
-
-        filename = secure_filename(
-            image.filename
-        )
-
-
-        if not filename:
-
-            filename = (
-                "received_stego.png"
-            )
-
-
-        # -------------------------------------------------
-        # SAVE IMAGE
-        # -------------------------------------------------
-
-        stego_path = os.path.join(
-
-            RECEIVED_FOLDER,
-
-            filename
-        )
-
-
-        image.save(
-            stego_path
-        )
-
+        # ----------------------------------------------------
+        # LOAD METADATA
+        # ----------------------------------------------------
+
+        metadata = load_rdh_metadata()
 
         print()
         print("=" * 60)
-        print("STEGO IMAGE RECEIVED")
+        print("RDH RECEIVER EXTRACTION")
         print("=" * 60)
 
-        print(
-            "Filename:",
-            filename
-        )
+        print("Stego image:")
+        print(STEGO_PATH)
+
+        print("Metadata:")
+        print(METADATA_PATH)
 
         print(
-            "Payload size:",
-            payload_size
-        )
-
-        print(
-            "RDH Peak:",
-            peak
+            "Payload bytes:",
+            metadata["payload_bytes"]
         )
 
         print(
-            "RDH Zero:",
-            zero
+            "Bit length:",
+            metadata["bit_length"]
         )
 
         print(
-            "RDH Bit Length:",
-            bit_length
+            "Number of positions:",
+            len(metadata["positions"])
         )
 
 
-        # -------------------------------------------------
-        # RECOVERED IMAGE PATH
-        # -------------------------------------------------
+        # ----------------------------------------------------
+        # EXTRACT ENCRYPTED DATA
+        # AND RECOVER ORIGINAL IMAGE
+        # ----------------------------------------------------
 
-        recovered_filename = (
-            "recovered_"
-            + os.path.splitext(filename)[0]
-            + ".png"
+        recovered_data, recovered_image = extract_payload(
+            STEGO_PATH,
+            metadata,
+            RECOVERED_PATH
         )
 
-
-        recovered_path = os.path.join(
-
-            RECOVERED_FOLDER,
-
-            recovered_filename
-        )
-
-
-        # -------------------------------------------------
-        # DWT + RDH EXTRACTION + IDWT
-        # -------------------------------------------------
-
-        encrypted_package, recovered_image = (
-            extract_payload(
-
-                stego_path,
-
-                metadata,
-
-                recovered_path
-            )
-        )
-
-
-        # -------------------------------------------------
-        # CHECK PAYLOAD SIZE
-        # -------------------------------------------------
-
-        if len(encrypted_package) != payload_size:
+        if recovered_data is None:
 
             raise ValueError(
-                "Extracted payload size does not "
-                "match transmitter payload size."
+                "RDH extraction returned "
+                "no encrypted package."
             )
 
+        print(
+            "Extracted encrypted package:",
+            len(recovered_data),
+            "bytes"
+        )
 
-        # -------------------------------------------------
-        # CHECK AES PACKAGE
-        # -------------------------------------------------
 
-        if len(encrypted_package) < 32:
+        # ----------------------------------------------------
+        # VERIFY PAYLOAD SIZE
+        # ----------------------------------------------------
+
+        expected_size = int(
+            metadata["payload_bytes"]
+        )
+
+        if len(recovered_data) != expected_size:
 
             raise ValueError(
-                "Encrypted package is too small."
+                "Extracted package size mismatch. "
+                f"Expected {expected_size} bytes, "
+                f"got {len(recovered_data)} bytes."
             )
 
 
-        # -------------------------------------------------
-        # SPLIT PACKAGE
+        # ----------------------------------------------------
+        # AES PACKAGE
         #
-        # SALT = 16 bytes
-        # IV   = 16 bytes
-        # -------------------------------------------------
+        # First 16 bytes  = salt
+        # Next 16 bytes   = IV
+        # Remaining       = ciphertext
+        # ----------------------------------------------------
 
-        last_salt = (
-            encrypted_package[:16]
-        )
+        if len(recovered_data) < 32:
 
-        last_iv = (
-            encrypted_package[16:32]
-        )
+            raise ValueError(
+                "Extracted encrypted package "
+                "is smaller than 32 bytes."
+            )
 
-        last_ciphertext = (
-            encrypted_package[32:]
-        )
+        last_encrypted_package = recovered_data
 
+        last_salt = recovered_data[:16]
 
-        last_stego_path = (
-            stego_path
-        )
+        last_iv = recovered_data[16:32]
 
-        last_filename = (
-            filename
-        )
+        last_ciphertext = recovered_data[32:]
 
-        last_recovered_path = (
-            recovered_path
-        )
-
-
-        # -------------------------------------------------
-        # DISPLAY
-        # -------------------------------------------------
-
-        encrypted_text = (
-            base64.b64encode(
-                encrypted_package
-            ).decode()
-        )
-
-
-        print(
-            "Encrypted package extracted successfully."
-        )
 
         print(
             "Salt:",
@@ -425,110 +443,177 @@ def receive():
             "bytes"
         )
 
-        print(
-            "Original image recovered:"
-            ,
-            recovered_path
-        )
 
+        # ----------------------------------------------------
+        # IMAGE RECOVERY METRICS
+        # ----------------------------------------------------
+
+        if os.path.exists(
+            ORIGINAL_IMAGE_PATH
+        ):
+
+            metrics = evaluate_recovery(
+                ORIGINAL_IMAGE_PATH,
+                RECOVERED_PATH
+            )
+
+            print()
+            print("=" * 60)
+            print("RECEIVER IMAGE RECOVERY METRICS")
+            print("=" * 60)
+
+            print(
+                "MSE:",
+                metrics["MSE"]
+            )
+
+            print(
+                "PSNR:",
+                metrics["PSNR"],
+                "dB"
+            )
+
+            print(
+                "SSIM:",
+                metrics["SSIM"]
+            )
+
+            print(
+                "Exact Recovery:",
+                metrics["Exact Recovery"]
+            )
+
+            print(
+                "Different Pixels:",
+                metrics["Different Pixels"]
+            )
+
+            print(
+                "Total Pixels:",
+                metrics["Total Pixels"]
+            )
+
+            print(
+                "Pixel Error Rate:",
+                metrics["Pixel Error Rate"]
+            )
+
+        else:
+
+            print()
+            print(
+                "Original image not found."
+            )
+
+            print(
+                "Recovery metrics skipped."
+            )
+
+
+        print()
+        print("=" * 60)
+        print("EXTRACTION SUCCESSFUL")
         print("=" * 60)
 
-
-        return render_template(
-
-            "receiver.html",
-
-            status=(
-                "✓ Stego image received. "
-                "DWT-RDH extraction successful."
-            ),
-
-            error=False,
-
-            filename=filename,
-
-            stego_available=True,
-
-            extracted=True,
-
-            decrypted_data=None,
-
-            recovered_image=(
-                "/recovered/"
-                + recovered_filename
-            )
-        )
+        return True
 
 
     except Exception as e:
 
-        print(
-            "Receiver error:",
-            str(e)
-        )
+        extraction_error = str(e)
+
+        print()
+        print("=" * 60)
+        print("EXTRACTION ERROR")
+        print("=" * 60)
+
+        print(str(e))
+
+        return False
 
 
-        return render_template(
+# ============================================================
+# HOME PAGE
+# ============================================================
 
-            "receiver.html",
+@app.route("/")
+def index():
 
-            status=(
-                "Receiver error: "
-                + str(e)
-            ),
+    return render_template(
+        "receiver.html",
 
-            error=True,
+        stego_available=os.path.exists(
+            STEGO_PATH
+        ),
 
-            filename=None,
+        recovered_available=os.path.exists(
+            RECOVERED_PATH
+        ),
 
-            stego_available=False,
+        stego_filename=STEGO_FILENAME,
 
-            extracted=False,
+        recovered_filename=RECOVERED_FILENAME,
 
-            decrypted_data=None,
+        extraction_error=extraction_error,
 
-            recovered_image=None
+        decryption_error=decryption_error,
 
-        ), 500
+        decrypted_data=decrypted_patient_data,
+
+        metrics=metrics
+    )
 
 
-# =========================================================
-# SERVE RECEIVED STEGO
-# =========================================================
+# ============================================================
+# EXTRACT ROUTE
+# ============================================================
+
+@app.route(
+    "/extract",
+    methods=["POST"]
+)
+def extract():
+
+    success = perform_extraction()
+
+    return redirect(
+        url_for("index")
+    )
+
+
+# ============================================================
+# SERVE RECEIVED IMAGE
+# ============================================================
 
 @app.route(
     "/received/<filename>"
 )
-def received_image(filename):
+def received_file(filename):
 
     return send_from_directory(
-
         RECEIVED_FOLDER,
-
         filename
     )
 
 
-# =========================================================
+# ============================================================
 # SERVE RECOVERED IMAGE
-# =========================================================
+# ============================================================
 
 @app.route(
     "/recovered/<filename>"
 )
-def recovered_image(filename):
+def recovered_file(filename):
 
     return send_from_directory(
-
         RECOVERED_FOLDER,
-
         filename
     )
 
 
-# =========================================================
-# DECRYPT
-# =========================================================
+# ============================================================
+# AES-256 DECRYPTION
+# ============================================================
 
 @app.route(
     "/decrypt",
@@ -536,95 +621,61 @@ def recovered_image(filename):
 )
 def decrypt():
 
-    global last_salt
-    global last_iv
-    global last_ciphertext
+    global decrypted_patient_data
+    global decryption_error
 
-
-    if (
-        last_salt is None
-        or
-        last_iv is None
-        or
-        last_ciphertext is None
-    ):
-
-        return render_template(
-
-            "receiver.html",
-
-            status=(
-                "No encrypted medical data "
-                "is available. Receive a stego "
-                "image first."
-            ),
-
-            error=True,
-
-            filename=last_filename,
-
-            stego_available=True,
-
-            extracted=False,
-
-            decrypted_data=None,
-
-            recovered_image=None
-
-        ), 400
-
+    decryption_error = None
 
     password = request.form.get(
         "password",
         ""
-    )
+    ).strip()
 
 
-    if password == "":
+    # --------------------------------------------------------
+    # CHECK PASSWORD
+    # --------------------------------------------------------
 
-        return render_template(
+    if not password:
 
-            "receiver.html",
+        decryption_error = (
+            "Please enter the AES-256 password."
+        )
 
-            status=(
-                "Please enter the password."
-            ),
+        return redirect(
+            url_for("index")
+        )
 
-            error=True,
 
-            filename=last_filename,
+    # --------------------------------------------------------
+    # CHECK EXTRACTION
+    # --------------------------------------------------------
 
-            stego_available=True,
+    if last_salt is None:
 
-            extracted=True,
+        decryption_error = (
+            "No encrypted package has been "
+            "extracted yet. Please extract "
+            "the received stego image first."
+        )
 
-            decrypted_data=None,
+        return redirect(
+            url_for("index")
+        )
 
-            recovered_image=(
-                "/recovered/"
-                + os.path.basename(
-                    last_recovered_path
-                )
-                if last_recovered_path
-                else None
-            )
 
-        ), 400
-
+    # --------------------------------------------------------
+    # DECRYPT
+    # --------------------------------------------------------
 
     try:
 
-        decrypted_data = decrypt_data(
-
+        decrypted_patient_data = decrypt_data(
             last_salt,
-
             last_iv,
-
             last_ciphertext,
-
             password
         )
-
 
         print()
         print("=" * 60)
@@ -632,88 +683,42 @@ def decrypt():
         print("=" * 60)
 
         print(
-            "Recovered Patient Data:"
+            "Recovered patient data:"
         )
 
         print(
-            decrypted_data
+            decrypted_patient_data
         )
 
         print("=" * 60)
 
 
-        return render_template(
-
-            "receiver.html",
-
-            status=(
-                "✓ AES-256 Decryption Successful"
-            ),
-
-            error=False,
-
-            filename=last_filename,
-
-            stego_available=True,
-
-            extracted=True,
-
-            decrypted_data=decrypted_data,
-
-            recovered_image=(
-                "/recovered/"
-                + os.path.basename(
-                    last_recovered_path
-                )
-                if last_recovered_path
-                else None
-            )
-
-        )
-
-
     except Exception as e:
 
+        decrypted_patient_data = None
+
+        decryption_error = (
+            "Decryption failed. "
+            "Check the password and make sure "
+            "the received stego image and metadata "
+            "belong to the same transmission."
+        )
+
+        print()
         print(
-            "Decryption failed:",
+            "AES DECRYPTION ERROR:",
             str(e)
         )
 
 
-        return render_template(
-
-            "receiver.html",
-
-            status=(
-                "Wrong password or invalid "
-                "encrypted data."
-            ),
-
-            error=True,
-
-            filename=last_filename,
-
-            stego_available=True,
-
-            extracted=True,
-
-            decrypted_data=None,
-
-            recovered_image=(
-                "/recovered/"
-                + os.path.basename(
-                    last_recovered_path
-                )
-                if last_recovered_path
-                else None
-            )
-
-        ), 400
+    return redirect(
+        url_for("index")
+    )
 
 
-# =========================================================
-# RUN
-# =========================================================
+# ============================================================
+# MAIN
+# ============================================================
 
 if __name__ == "__main__":
 
@@ -723,25 +728,43 @@ if __name__ == "__main__":
     print("=" * 60)
 
     print(
-        "Receiver URL:"
+        "Receiver folder:",
+        RECEIVED_FOLDER
+    )
+
+    print(
+        "Recovered folder:",
+        RECOVERED_FOLDER
+    )
+
+    print(
+        "Stego image:",
+        STEGO_PATH
+    )
+
+    print(
+        "RDH metadata:",
+        METADATA_PATH
+    )
+
+    print(
+        "Original image for metrics:",
+        ORIGINAL_IMAGE_PATH
+    )
+
+    print()
+    print(
+        "Open browser at:"
     )
 
     print(
         "http://127.0.0.1:5001"
     )
 
-    print(
-        "Waiting for stego image..."
-    )
-
     print("=" * 60)
 
-
     app.run(
-
         host="0.0.0.0",
-
         port=5001,
-
         debug=True
     )
