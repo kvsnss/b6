@@ -1,5 +1,7 @@
 import os
 import json
+import zipfile
+
 import cv2
 import numpy as np
 
@@ -22,13 +24,29 @@ from aes import decrypt_data
 
 app = Flask(__name__)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
 
-RECEIVED_FOLDER = os.path.join(BASE_DIR, "received")
-RECOVERED_FOLDER = os.path.join(BASE_DIR, "recovered")
+RECEIVED_FOLDER = os.path.join(
+    BASE_DIR,
+    "received"
+)
 
-os.makedirs(RECEIVED_FOLDER, exist_ok=True)
-os.makedirs(RECOVERED_FOLDER, exist_ok=True)
+RECOVERED_FOLDER = os.path.join(
+    BASE_DIR,
+    "recovered"
+)
+
+os.makedirs(
+    RECEIVED_FOLDER,
+    exist_ok=True
+)
+
+os.makedirs(
+    RECOVERED_FOLDER,
+    exist_ok=True
+)
 
 
 # ============================================================
@@ -36,9 +54,14 @@ os.makedirs(RECOVERED_FOLDER, exist_ok=True)
 # ============================================================
 
 STEGO_FILENAME = "stego_image.png"
+
 METADATA_FILENAME = "metadata.json"
-RECOVERED_FILENAME = "recovered_image.png"
+
 ORIGINAL_FILENAME = "original_image.png"
+
+RECOVERED_FILENAME = "recovered_image.png"
+
+TRANSMISSION_FILENAME = "transmission.zip"
 
 
 # ============================================================
@@ -65,14 +88,33 @@ RECOVERED_PATH = os.path.join(
     RECOVERED_FILENAME
 )
 
+TRANSMISSION_PATH = os.path.join(
+    RECEIVED_FOLDER,
+    TRANSMISSION_FILENAME
+)
+
+
+# ============================================================
+# EXPECTED ZIP FILES
+# ============================================================
+
+REQUIRED_TRANSMISSION_FILES = {
+    STEGO_FILENAME,
+    ORIGINAL_FILENAME,
+    METADATA_FILENAME
+}
+
 
 # ============================================================
 # GLOBAL VARIABLES
 # ============================================================
 
 last_encrypted_package = None
+
 last_salt = None
+
 last_iv = None
+
 last_ciphertext = None
 
 decrypted_patient_data = None
@@ -80,42 +122,79 @@ decrypted_patient_data = None
 metrics = None
 
 extraction_error = None
+
 decryption_error = None
+
+status_message = None
+
+error_message = None
+
+extraction_success = False
 
 
 # ============================================================
 # IMAGE METRICS
 # ============================================================
 
-def calculate_mse(reference, test):
+def calculate_mse(
+    reference,
+    test
+):
 
-    reference = reference.astype(np.float64)
-    test = test.astype(np.float64)
+    reference = reference.astype(
+        np.float64
+    )
+
+    test = test.astype(
+        np.float64
+    )
 
     return float(
-        np.mean((reference - test) ** 2)
+        np.mean(
+            (reference - test) ** 2
+        )
     )
 
 
-def calculate_psnr(reference, test):
+def calculate_psnr(
+    reference,
+    test
+):
 
-    mse = calculate_mse(reference, test)
+    mse = calculate_mse(
+        reference,
+        test
+    )
 
     if mse == 0:
+
         return float("inf")
 
     return float(
-        10 * np.log10((255.0 ** 2) / mse)
+        10 * np.log10(
+            (255.0 ** 2) / mse
+        )
     )
 
 
-def calculate_ssim(reference, test):
+def calculate_ssim(
+    reference,
+    test
+):
 
     try:
-        from skimage.metrics import structural_similarity
 
-        reference = reference.astype(np.uint8)
-        test = test.astype(np.uint8)
+        from skimage.metrics import (
+            structural_similarity
+        )
+
+        reference = reference.astype(
+            np.uint8
+        )
+
+        test = test.astype(
+            np.uint8
+        )
 
         return float(
             structural_similarity(
@@ -126,22 +205,34 @@ def calculate_ssim(reference, test):
         )
 
     except ImportError:
+
         return None
 
 
-def calculate_exact_recovery(reference, recovered):
+def calculate_exact_recovery(
+    reference,
+    recovered
+):
 
     if reference.shape != recovered.shape:
+
         return False
 
     return bool(
-        np.array_equal(reference, recovered)
+        np.array_equal(
+            reference,
+            recovered
+        )
     )
 
 
-def calculate_pixel_error_rate(reference, recovered):
+def calculate_pixel_error_rate(
+    reference,
+    recovered
+):
 
     if reference.shape != recovered.shape:
+
         return 1.0
 
     different_pixels = np.count_nonzero(
@@ -151,6 +242,7 @@ def calculate_pixel_error_rate(reference, recovered):
     total_pixels = reference.size
 
     if total_pixels == 0:
+
         return 0.0
 
     return float(
@@ -158,7 +250,10 @@ def calculate_pixel_error_rate(reference, recovered):
     )
 
 
-def evaluate_recovery(original_path, recovered_path):
+def evaluate_recovery(
+    original_path,
+    recovered_path
+):
 
     original = cv2.imread(
         original_path,
@@ -171,16 +266,19 @@ def evaluate_recovery(original_path, recovered_path):
     )
 
     if original is None:
+
         raise ValueError(
             "Original image could not be loaded."
         )
 
     if recovered is None:
+
         raise ValueError(
             "Recovered image could not be loaded."
         )
 
     if original.shape != recovered.shape:
+
         raise ValueError(
             f"Image dimensions do not match. "
             f"Original: {original.shape}, "
@@ -223,14 +321,81 @@ def evaluate_recovery(original_path, recovered_path):
     )
 
     return {
-        "MSE": mse,
-        "PSNR": psnr,
-        "SSIM": ssim,
-        "Exact Recovery": exact,
-        "Different Pixels": different_pixels,
-        "Total Pixels": total_pixels,
-        "Pixel Error Rate": pixel_error_rate
+
+        "mse": mse,
+
+        "psnr": psnr,
+
+        "ssim": ssim,
+
+        "exact_recovery": exact,
+
+        "different_pixels": different_pixels,
+
+        "total_pixels": total_pixels,
+
+        "pixel_error_rate": pixel_error_rate
     }
+
+
+# ============================================================
+# CLEAR PREVIOUS TRANSMISSION
+# ============================================================
+
+def clear_previous_transmission():
+
+    global last_encrypted_package
+    global last_salt
+    global last_iv
+    global last_ciphertext
+    global decrypted_patient_data
+    global metrics
+    global extraction_error
+    global decryption_error
+    global extraction_success
+
+    files_to_remove = [
+
+        STEGO_PATH,
+
+        METADATA_PATH,
+
+        ORIGINAL_IMAGE_PATH,
+
+        RECOVERED_PATH,
+
+        TRANSMISSION_PATH
+    ]
+
+    for file_path in files_to_remove:
+
+        if os.path.exists(file_path):
+
+            try:
+
+                os.remove(file_path)
+
+            except OSError:
+
+                pass
+
+    last_encrypted_package = None
+
+    last_salt = None
+
+    last_iv = None
+
+    last_ciphertext = None
+
+    decrypted_patient_data = None
+
+    metrics = None
+
+    extraction_error = None
+
+    decryption_error = None
+
+    extraction_success = False
 
 
 # ============================================================
@@ -239,13 +404,19 @@ def evaluate_recovery(original_path, recovered_path):
 
 def load_rdh_metadata():
 
-    if not os.path.exists(METADATA_PATH):
+    if not os.path.exists(
+        METADATA_PATH
+    ):
 
         raise FileNotFoundError(
+
             "RDH metadata not found.\n"
-            f"Expected location:\n{METADATA_PATH}\n\n"
-            "Make sure metadata.json belongs to "
-            "the same stego image."
+
+            f"Expected location:\n"
+            f"{METADATA_PATH}\n\n"
+
+            "Make sure metadata.json belongs "
+            "to the same stego image."
         )
 
     with open(
@@ -256,16 +427,23 @@ def load_rdh_metadata():
 
         metadata = json.load(f)
 
-    if not isinstance(metadata, dict):
+    if not isinstance(
+        metadata,
+        dict
+    ):
 
         raise ValueError(
             "Invalid RDH metadata format."
         )
 
     required_fields = [
+
         "positions",
+
         "original_values",
+
         "bit_length",
+
         "payload_bytes"
     ]
 
@@ -274,25 +452,32 @@ def load_rdh_metadata():
         if field not in metadata:
 
             raise ValueError(
-                f"RDH metadata does not contain "
+
+                "RDH metadata does not contain "
                 f"'{field}'."
             )
 
-    if len(metadata["positions"]) != len(
+    if len(
+        metadata["positions"]
+    ) != len(
         metadata["original_values"]
     ):
 
         raise ValueError(
+
             "RDH metadata is inconsistent: "
             "positions and original_values "
             "have different lengths."
         )
 
-    if int(metadata["bit_length"]) != len(
+    if int(
+        metadata["bit_length"]
+    ) != len(
         metadata["positions"]
     ):
 
         raise ValueError(
+
             "RDH metadata is inconsistent: "
             "bit_length does not match positions."
         )
@@ -312,11 +497,17 @@ def perform_extraction():
     global last_ciphertext
     global metrics
     global extraction_error
+    global extraction_success
 
     extraction_error = None
+
     metrics = None
 
-    if not os.path.exists(STEGO_PATH):
+    extraction_success = False
+
+    if not os.path.exists(
+        STEGO_PATH
+    ):
 
         extraction_error = (
             "Received stego image not found."
@@ -333,15 +524,24 @@ def perform_extraction():
         metadata = load_rdh_metadata()
 
         print()
-        print("=" * 60)
-        print("RDH RECEIVER EXTRACTION")
+
         print("=" * 60)
 
-        print("Stego image:")
-        print(STEGO_PATH)
+        print(
+            "RDH RECEIVER EXTRACTION"
+        )
 
-        print("Metadata:")
-        print(METADATA_PATH)
+        print("=" * 60)
+
+        print(
+            "Stego image:",
+            STEGO_PATH
+        )
+
+        print(
+            "Metadata:",
+            METADATA_PATH
+        )
 
         print(
             "Payload bytes:",
@@ -364,10 +564,12 @@ def perform_extraction():
         # AND RECOVER ORIGINAL IMAGE
         # ----------------------------------------------------
 
-        recovered_data, recovered_image = extract_payload(
-            STEGO_PATH,
-            metadata,
-            RECOVERED_PATH
+        recovered_data, recovered_image = (
+            extract_payload(
+                STEGO_PATH,
+                metadata,
+                RECOVERED_PATH
+            )
         )
 
         if recovered_data is None:
@@ -395,8 +597,11 @@ def perform_extraction():
         if len(recovered_data) != expected_size:
 
             raise ValueError(
+
                 "Extracted package size mismatch. "
+
                 f"Expected {expected_size} bytes, "
+
                 f"got {len(recovered_data)} bytes."
             )
 
@@ -404,26 +609,34 @@ def perform_extraction():
         # ----------------------------------------------------
         # AES PACKAGE
         #
-        # First 16 bytes  = salt
-        # Next 16 bytes   = IV
-        # Remaining       = ciphertext
+        # First 16 bytes = salt
+        # Next 16 bytes  = IV
+        # Remaining      = ciphertext
         # ----------------------------------------------------
 
         if len(recovered_data) < 32:
 
             raise ValueError(
+
                 "Extracted encrypted package "
                 "is smaller than 32 bytes."
             )
 
-        last_encrypted_package = recovered_data
+        last_encrypted_package = (
+            recovered_data
+        )
 
-        last_salt = recovered_data[:16]
+        last_salt = (
+            recovered_data[:16]
+        )
 
-        last_iv = recovered_data[16:32]
+        last_iv = (
+            recovered_data[16:32]
+        )
 
-        last_ciphertext = recovered_data[32:]
-
+        last_ciphertext = (
+            recovered_data[32:]
+        )
 
         print(
             "Salt:",
@@ -458,49 +671,55 @@ def perform_extraction():
             )
 
             print()
+
             print("=" * 60)
-            print("RECEIVER IMAGE RECOVERY METRICS")
+
+            print(
+                "RECEIVER IMAGE RECOVERY METRICS"
+            )
+
             print("=" * 60)
 
             print(
                 "MSE:",
-                metrics["MSE"]
+                metrics["mse"]
             )
 
             print(
                 "PSNR:",
-                metrics["PSNR"],
+                metrics["psnr"],
                 "dB"
             )
 
             print(
                 "SSIM:",
-                metrics["SSIM"]
+                metrics["ssim"]
             )
 
             print(
                 "Exact Recovery:",
-                metrics["Exact Recovery"]
+                metrics["exact_recovery"]
             )
 
             print(
                 "Different Pixels:",
-                metrics["Different Pixels"]
+                metrics["different_pixels"]
             )
 
             print(
                 "Total Pixels:",
-                metrics["Total Pixels"]
+                metrics["total_pixels"]
             )
 
             print(
                 "Pixel Error Rate:",
-                metrics["Pixel Error Rate"]
+                metrics["pixel_error_rate"]
             )
 
         else:
 
             print()
+
             print(
                 "Original image not found."
             )
@@ -510,9 +729,16 @@ def perform_extraction():
             )
 
 
+        extraction_success = True
+
         print()
+
         print("=" * 60)
-        print("EXTRACTION SUCCESSFUL")
+
+        print(
+            "EXTRACTION SUCCESSFUL"
+        )
+
         print("=" * 60)
 
         return True
@@ -522,14 +748,299 @@ def perform_extraction():
 
         extraction_error = str(e)
 
+        extraction_success = False
+
         print()
+
         print("=" * 60)
-        print("EXTRACTION ERROR")
+
+        print(
+            "EXTRACTION ERROR"
+        )
+
         print("=" * 60)
 
         print(str(e))
 
         return False
+
+
+# ============================================================
+# ZIP UPLOAD AND EXTRACTION
+# ============================================================
+
+@app.route(
+    "/upload_transmission",
+    methods=["POST"]
+)
+def upload_transmission():
+
+    global status_message
+    global error_message
+
+    status_message = None
+    error_message = None
+
+    uploaded_file = request.files.get(
+        "transmission_zip"
+    )
+
+    # --------------------------------------------------------
+    # CHECK FILE
+    # --------------------------------------------------------
+
+    if uploaded_file is None:
+
+        error_message = (
+            "Please select transmission.zip."
+        )
+
+        return redirect(
+            url_for("index")
+        )
+
+    if not uploaded_file.filename:
+
+        error_message = (
+            "No ZIP file was selected."
+        )
+
+        return redirect(
+            url_for("index")
+        )
+
+    if not uploaded_file.filename.lower().endswith(
+        ".zip"
+    ):
+
+        error_message = (
+            "Please upload a ZIP file."
+        )
+
+        return redirect(
+            url_for("index")
+        )
+
+
+    # --------------------------------------------------------
+    # CLEAR PREVIOUS TRANSMISSION
+    # --------------------------------------------------------
+
+    clear_previous_transmission()
+
+
+    try:
+
+        # ----------------------------------------------------
+        # SAVE ZIP
+        # ----------------------------------------------------
+
+        uploaded_file.save(
+            TRANSMISSION_PATH
+        )
+
+        print()
+
+        print("=" * 60)
+
+        print(
+            "TRANSMISSION ZIP RECEIVED"
+        )
+
+        print("=" * 60)
+
+        print(
+            "ZIP:",
+            TRANSMISSION_PATH
+        )
+
+
+        # ----------------------------------------------------
+        # OPEN ZIP
+        # ----------------------------------------------------
+
+        with zipfile.ZipFile(
+            TRANSMISSION_PATH,
+            "r"
+        ) as zip_file:
+
+            if not zipfile.is_zipfile(
+                TRANSMISSION_PATH
+            ):
+
+                raise ValueError(
+                    "Uploaded file is not a valid ZIP."
+                )
+
+            names = zip_file.namelist()
+
+
+            # ------------------------------------------------
+            # CHECK FOR DIRECTORIES
+            # ------------------------------------------------
+
+            for name in names:
+
+                if name.endswith("/"):
+
+                    raise ValueError(
+                        "ZIP contains an invalid directory."
+                    )
+
+
+            # ------------------------------------------------
+            # CHECK EXACT FILES
+            # ------------------------------------------------
+
+            actual_files = set(names)
+
+            if actual_files != (
+                REQUIRED_TRANSMISSION_FILES
+            ):
+
+                missing = (
+                    REQUIRED_TRANSMISSION_FILES
+                    - actual_files
+                )
+
+                extra = (
+                    actual_files
+                    - REQUIRED_TRANSMISSION_FILES
+                )
+
+                message_parts = []
+
+                if missing:
+
+                    message_parts.append(
+                        "Missing files: "
+                        + ", ".join(
+                            sorted(missing)
+                        )
+                    )
+
+                if extra:
+
+                    message_parts.append(
+                        "Unexpected files: "
+                        + ", ".join(
+                            sorted(extra)
+                        )
+                    )
+
+                raise ValueError(
+                    "Invalid transmission ZIP. "
+                    + " | ".join(
+                        message_parts
+                    )
+                )
+
+
+            # ------------------------------------------------
+            # EXTRACT ONLY REQUIRED FILES
+            # ------------------------------------------------
+
+            for filename in (
+                REQUIRED_TRANSMISSION_FILES
+            ):
+
+                file_data = zip_file.read(
+                    filename
+                )
+
+                output_path = os.path.join(
+                    RECEIVED_FOLDER,
+                    filename
+                )
+
+                with open(
+                    output_path,
+                    "wb"
+                ) as output_file:
+
+                    output_file.write(
+                        file_data
+                    )
+
+
+        # ----------------------------------------------------
+        # VERIFY EXTRACTED FILES
+        # ----------------------------------------------------
+
+        for filename in (
+            REQUIRED_TRANSMISSION_FILES
+        ):
+
+            file_path = os.path.join(
+                RECEIVED_FOLDER,
+                filename
+            )
+
+            if not os.path.isfile(
+                file_path
+            ):
+
+                raise FileNotFoundError(
+                    f"{filename} was not extracted."
+                )
+
+
+        status_message = (
+            "Transmission ZIP uploaded successfully. "
+            "The three required files were extracted."
+        )
+
+        print(
+            "Extracted:",
+            STEGO_FILENAME
+        )
+
+        print(
+            "Extracted:",
+            ORIGINAL_FILENAME
+        )
+
+        print(
+            "Extracted:",
+            METADATA_FILENAME
+        )
+
+        print(
+            "ZIP extraction successful."
+        )
+
+
+    except zipfile.BadZipFile:
+
+        error_message = (
+            "The uploaded file is not a valid ZIP file."
+        )
+
+        if os.path.exists(
+            TRANSMISSION_PATH
+        ):
+
+            os.remove(
+                TRANSMISSION_PATH
+            )
+
+
+    except Exception as e:
+
+        error_message = (
+            "Transmission ZIP processing failed: "
+            + str(e)
+        )
+
+        print(
+            "ZIP ERROR:",
+            str(e)
+        )
+
+
+    return redirect(
+        url_for("index")
+    )
 
 
 # ============================================================
@@ -540,7 +1051,12 @@ def perform_extraction():
 def index():
 
     return render_template(
+
         "receiver.html",
+
+        status=status_message,
+
+        error=error_message,
 
         stego_available=os.path.exists(
             STEGO_PATH
@@ -560,21 +1076,75 @@ def index():
 
         decrypted_data=decrypted_patient_data,
 
-        metrics=metrics
+        metrics=metrics,
+
+        filename=(
+            STEGO_FILENAME
+            if os.path.exists(STEGO_PATH)
+            else None
+        ),
+
+        extracted=extraction_success,
+
+        recovered_image=(
+            url_for(
+                "recovered_image",
+                filename=RECOVERED_FILENAME
+            )
+            if os.path.exists(RECOVERED_PATH)
+            else None
+        )
     )
 
 
 # ============================================================
-# EXTRACT ROUTE
+# PROCESS / EXTRACT RECEIVED TRANSMISSION
 # ============================================================
 
 @app.route(
-    "/extract",
+    "/process",
     methods=["POST"]
 )
-def extract():
+def process():
+
+    global status_message
+    global error_message
+
+    status_message = None
+    error_message = None
+
+    if not os.path.exists(
+        STEGO_PATH
+    ):
+
+        error_message = (
+            "No stego image is available. "
+            "Please upload the transmission ZIP first."
+        )
+
+        return redirect(
+            url_for("index")
+        )
+
 
     success = perform_extraction()
+
+
+    if success:
+
+        status_message = (
+            "✓ RDH extraction completed successfully. "
+            "The encrypted medical package was extracted "
+            "and the original image was recovered."
+        )
+
+    else:
+
+        error_message = (
+            "RDH extraction failed: "
+            + str(extraction_error)
+        )
+
 
     return redirect(
         url_for("index")
@@ -582,13 +1152,13 @@ def extract():
 
 
 # ============================================================
-# SERVE RECEIVED IMAGE
+# SERVE RECEIVED FILES
 # ============================================================
 
 @app.route(
     "/received/<filename>"
 )
-def received_file(filename):
+def received_image(filename):
 
     return send_from_directory(
         RECEIVED_FOLDER,
@@ -603,7 +1173,7 @@ def received_file(filename):
 @app.route(
     "/recovered/<filename>"
 )
-def recovered_file(filename):
+def recovered_image(filename):
 
     return send_from_directory(
         RECOVERED_FOLDER,
@@ -619,10 +1189,11 @@ def recovered_file(filename):
     "/decrypt",
     methods=["POST"]
 )
-def decrypt():
+def decrypt_route():
 
     global decrypted_patient_data
     global decryption_error
+    global status_message
 
     decryption_error = None
 
@@ -654,9 +1225,10 @@ def decrypt():
     if last_salt is None:
 
         decryption_error = (
+
             "No encrypted package has been "
-            "extracted yet. Please extract "
-            "the received stego image first."
+            "extracted yet. Please process "
+            "the received transmission first."
         )
 
         return redirect(
@@ -671,15 +1243,28 @@ def decrypt():
     try:
 
         decrypted_patient_data = decrypt_data(
+
             last_salt,
+
             last_iv,
+
             last_ciphertext,
+
             password
         )
 
+        status_message = (
+            "✓ AES-256 decryption successful."
+        )
+
         print()
+
         print("=" * 60)
-        print("AES-256 DECRYPTION SUCCESSFUL")
+
+        print(
+            "AES-256 DECRYPTION SUCCESSFUL"
+        )
+
         print("=" * 60)
 
         print(
@@ -698,13 +1283,15 @@ def decrypt():
         decrypted_patient_data = None
 
         decryption_error = (
+
             "Decryption failed. "
             "Check the password and make sure "
-            "the received stego image and metadata "
+            "the received transmission files "
             "belong to the same transmission."
         )
 
         print()
+
         print(
             "AES DECRYPTION ERROR:",
             str(e)
@@ -723,8 +1310,13 @@ def decrypt():
 if __name__ == "__main__":
 
     print()
+
     print("=" * 60)
-    print("RASPBERRY PI MEDICAL DATA RECEIVER")
+
+    print(
+        "RASPBERRY PI MEDICAL DATA RECEIVER"
+    )
+
     print("=" * 60)
 
     print(
@@ -735,6 +1327,11 @@ if __name__ == "__main__":
     print(
         "Recovered folder:",
         RECOVERED_FOLDER
+    )
+
+    print(
+        "Transmission ZIP:",
+        TRANSMISSION_PATH
     )
 
     print(
@@ -753,6 +1350,7 @@ if __name__ == "__main__":
     )
 
     print()
+
     print(
         "Open browser at:"
     )
