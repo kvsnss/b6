@@ -2,6 +2,7 @@ import os
 import base64
 import json
 import uuid
+import zipfile
 
 import cv2
 import numpy as np
@@ -10,15 +11,13 @@ from flask import (
     Flask,
     render_template,
     request,
-    send_from_directory
+    send_from_directory,
+    send_file
 )
 
 from werkzeug.utils import secure_filename
 
-from aes import (
-    encrypt_data,
-    decrypt_data
-)
+from aes import encrypt_data
 
 from roi import detect_roi
 
@@ -35,18 +34,18 @@ from rdh import (
 from metrics import calculate_metrics
 
 
-# =========================================================
+# =================================
 # BASE DIRECTORY
-# =========================================================
+# =================================
 
 BASE_DIR = os.path.dirname(
     os.path.abspath(__file__)
 )
 
 
-# =========================================================
+# =================================
 # FLASK APPLICATION
-# =========================================================
+# =================================
 
 app = Flask(
     __name__,
@@ -55,9 +54,9 @@ app = Flask(
 )
 
 
-# =========================================================
+# =================================
 # FOLDERS
-# =========================================================
+# =================================
 
 UPLOAD_FOLDER = os.path.join(
     BASE_DIR,
@@ -67,6 +66,11 @@ UPLOAD_FOLDER = os.path.join(
 OUTPUT_FOLDER = os.path.join(
     BASE_DIR,
     "output"
+)
+
+TRANSMISSION_FOLDER = os.path.join(
+    BASE_DIR,
+    "transmission"
 )
 
 os.makedirs(
@@ -79,36 +83,34 @@ os.makedirs(
     exist_ok=True
 )
 
+os.makedirs(
+    TRANSMISSION_FOLDER,
+    exist_ok=True
+)
 
-# =========================================================
+
+# =================================
 # LOCAL DEMO STORAGE
-# =========================================================
+# =================================
 
 cipher_store = None
 salt_store = None
 iv_store = None
 patient_store = None
-
 rdh_metadata_store = None
-
 stego_filename_store = None
 
+# Stores the latest ZIP filename
+transmission_zip_store = None
 
-# =========================================================
+
+# =================================
 # NORMALIZE DWT BAND FOR SAVING
-# =========================================================
-#
-# IMPORTANT:
-# This is ONLY for creating visual DWT images.
-# The normalized images are never used in reconstruction.
-#
-# =========================================================
+# =================================
 
 def normalize_image(data):
 
-    data = np.asarray(
-        data
-    ).astype(
+    data = np.asarray(data).astype(
         np.float64
     )
 
@@ -135,9 +137,114 @@ def normalize_image(data):
     )
 
 
-# =========================================================
+# =================================
+# CREATE TRANSMISSION ZIP
+# =================================
+
+def create_transmission_zip(
+    stego_path,
+    original_path,
+    metadata_path,
+    process_id
+):
+
+    zip_filename = (
+        "transmission_"
+        + process_id
+        + ".zip"
+    )
+
+    zip_path = os.path.join(
+        TRANSMISSION_FOLDER,
+        zip_filename
+    )
+
+    # ---------------------------------
+    # Remove previous ZIP if it exists
+    # ---------------------------------
+
+    if os.path.exists(zip_path):
+
+        os.remove(zip_path)
+
+    # ---------------------------------
+    # Create ZIP
+    # ---------------------------------
+
+    with zipfile.ZipFile(
+        zip_path,
+        mode="w",
+        compression=zipfile.ZIP_DEFLATED
+    ) as zip_file:
+
+        # Stego image
+        zip_file.write(
+            stego_path,
+            arcname="stego_image.png"
+        )
+
+        # Original medical image
+        zip_file.write(
+            original_path,
+            arcname="original_image.png"
+        )
+
+        # RDH metadata
+        zip_file.write(
+            metadata_path,
+            arcname="metadata.json"
+        )
+
+    # ---------------------------------
+    # Verify ZIP
+    # ---------------------------------
+
+    if not os.path.isfile(zip_path):
+
+        raise FileNotFoundError(
+            "Transmission ZIP was not created."
+        )
+
+    print()
+    print("========================================")
+    print("TRANSMISSION ZIP CREATED")
+    print("========================================")
+
+    print(
+        "ZIP path:",
+        os.path.abspath(zip_path)
+    )
+
+    print(
+        "ZIP size:",
+        os.path.getsize(zip_path),
+        "bytes"
+    )
+
+    print(
+        "ZIP contents:"
+    )
+
+    with zipfile.ZipFile(
+        zip_path,
+        "r"
+    ) as zip_file:
+
+        for filename in zip_file.namelist():
+
+            print(
+                "  -",
+                filename
+            )
+
+    print("========================================")
+
+    return zip_filename
+
+
+# =================================
 # HOME
-# =========================================================
+# =================================
 
 @app.route("/")
 def home():
@@ -147,9 +254,9 @@ def home():
     )
 
 
-# =========================================================
+# =================================
 # STYLE
-# =========================================================
+# =================================
 
 @app.route("/style.css")
 def style():
@@ -160,9 +267,9 @@ def style():
     )
 
 
-# =========================================================
+# =================================
 # SERVE OUTPUT FILES
-# =========================================================
+# =================================
 
 @app.route(
     "/output/<path:filename>"
@@ -175,9 +282,48 @@ def output_file(filename):
     )
 
 
-# =========================================================
+# =================================
+# DOWNLOAD TRANSMISSION ZIP
+# =================================
+
+@app.route(
+    "/download-transmission"
+)
+def download_transmission():
+
+    global transmission_zip_store
+
+    if not transmission_zip_store:
+
+        return (
+            "No transmission ZIP is available. "
+            "Please perform encryption first.",
+            404
+        )
+
+    zip_path = os.path.join(
+        TRANSMISSION_FOLDER,
+        transmission_zip_store
+    )
+
+    if not os.path.isfile(zip_path):
+
+        return (
+            "Transmission ZIP file was not found.",
+            404
+        )
+
+    return send_file(
+        zip_path,
+        as_attachment=True,
+        download_name="transmission.zip",
+        mimetype="application/zip"
+    )
+
+
+# =================================
 # ENCRYPTION + ROI + DWT + RDH + IDWT
-# =========================================================
+# =================================
 
 @app.route(
     "/encrypt",
@@ -191,17 +337,16 @@ def encrypt():
     global patient_store
     global rdh_metadata_store
     global stego_filename_store
-
+    global transmission_zip_store
 
     print()
-    print("========================================")
+    print("============================")
     print("TRANSMITTER PROCESS STARTED")
-    print("========================================")
+    print("============================")
 
-
-    # =====================================================
+    # =============================
     # 1. PATIENT DATA
-    # =====================================================
+    # =============================
 
     name = request.form.get(
         "name",
@@ -244,9 +389,9 @@ def encrypt():
     )
 
 
-    # =====================================================
+    # ============================
     # 2. PASSWORD CHECK
-    # =====================================================
+    # ============================
 
     if not password:
 
@@ -256,14 +401,13 @@ def encrypt():
         )
 
 
-    # =====================================================
+    # ============================
     # 3. MEDICAL IMAGE
-    # =====================================================
+    # ============================
 
     image_file = request.files.get(
         "medical_image"
     )
-
 
     if image_file is None:
 
@@ -281,14 +425,13 @@ def encrypt():
         )
 
 
-    # =====================================================
+    # =============================
     # 4. SECURE FILE NAME
-    # =====================================================
+    # =============================
 
     original_filename = secure_filename(
         image_file.filename
     )
-
 
     if not original_filename:
 
@@ -298,9 +441,9 @@ def encrypt():
         )
 
 
-    # =====================================================
+    # =============================
     # 5. UNIQUE PROCESS ID
-    # =====================================================
+    # =============================
 
     process_id = uuid.uuid4().hex[:12]
 
@@ -309,9 +452,9 @@ def encrypt():
     )[0]
 
 
-    # =====================================================
+    # ==============================
     # 6. PATIENT DATA STRING
-    # =====================================================
+    # ==============================
 
     patient_data = (
         f"Patient Name : {name}\n"
@@ -323,14 +466,13 @@ def encrypt():
         f"Hospital     : {hospital}"
     )
 
-
     print()
     print("Patient data prepared.")
 
 
-    # =====================================================
+    # ==============================
     # 7. SAVE UPLOADED IMAGE
-    # =====================================================
+    # ==============================
 
     input_filename = (
         process_id
@@ -342,7 +484,6 @@ def encrypt():
         UPLOAD_FOLDER,
         input_filename
     )
-
 
     try:
 
@@ -367,15 +508,14 @@ def encrypt():
     )
 
 
-    # =====================================================
+    # ==============================
     # 8. READ MEDICAL IMAGE
-    # =====================================================
+    # ==============================
 
     image = cv2.imread(
         image_path,
         cv2.IMREAD_GRAYSCALE
     )
-
 
     if image is None:
 
@@ -392,12 +532,11 @@ def encrypt():
     )
 
 
-    # =====================================================
+    # ==============================
     # 9. IMAGE SIZE
-    # =====================================================
+    # ==============================
 
     height, width = image.shape
-
 
     print(
         "Image size:",
@@ -405,7 +544,6 @@ def encrypt():
         "x",
         height
     )
-
 
     if height % 2 != 0:
 
@@ -431,10 +569,10 @@ def encrypt():
         )
 
 
-    # =====================================================
+    # =============================
     # STEP 1
     # AES-256 ENCRYPTION
-    # =====================================================
+    # =============================
 
     try:
 
@@ -459,9 +597,9 @@ def encrypt():
     )
 
 
-    # =====================================================
+    # =============================
     # STORE AES DATA
-    # =====================================================
+    # =============================
 
     cipher_store = ciphertext
     salt_store = salt
@@ -469,11 +607,10 @@ def encrypt():
     patient_store = patient_data
 
 
-    # =====================================================
+    # =============================
     # ENCRYPTED PACKAGE
-    #
     # SALT + IV + CIPHERTEXT
-    # =====================================================
+    # =============================
 
     encrypted_package = (
         salt
@@ -483,7 +620,6 @@ def encrypt():
         ciphertext
     )
 
-
     print(
         "Encrypted package size:",
         len(encrypted_package),
@@ -491,19 +627,19 @@ def encrypt():
     )
 
 
-    # =====================================================
+    # =============================
     # BASE64 ENCODED TEXT
-    # =====================================================
+    # =============================
 
     encrypted_text = base64.b64encode(
         encrypted_package
     ).decode()
 
 
-    # =====================================================
+    # ==============================
     # STEP 2
     # ROI DETECTION
-    # =====================================================
+    # ==============================
 
     try:
 
@@ -533,9 +669,9 @@ def encrypt():
     )
 
 
-    # =====================================================
+    # ==============================
     # VERIFY IMAGE
-    # =====================================================
+    # ==============================
 
     if not np.array_equal(
         image,
@@ -551,9 +687,9 @@ def encrypt():
         )
 
 
-    # =====================================================
+    # ==============================
     # SAVE ORIGINAL IMAGE
-    # =====================================================
+    # ==============================
 
     original_output_filename = (
         "original_"
@@ -566,7 +702,6 @@ def encrypt():
         original_output_filename
     )
 
-
     if not cv2.imwrite(
         original_output_path,
         image
@@ -578,14 +713,9 @@ def encrypt():
         )
 
 
-    # =====================================================
+    # ==============================
     # SAVE ROI IMAGE
-    # =====================================================
-    #
-    # Stored in output/.
-    # NOT displayed on website.
-    #
-    # =====================================================
+    # ==============================
 
     roi_filename = (
         "roi_"
@@ -598,7 +728,6 @@ def encrypt():
         roi_filename
     )
 
-
     if not cv2.imwrite(
         roi_path,
         roi_image
@@ -610,14 +739,9 @@ def encrypt():
         )
 
 
-    # =====================================================
+    # ==============================
     # SAVE NON-ROI IMAGE
-    # =====================================================
-    #
-    # Stored in output/.
-    # NOT displayed on website.
-    #
-    # =====================================================
+    # =============================
 
     non_roi_filename = (
         "non_roi_"
@@ -629,7 +753,6 @@ def encrypt():
         OUTPUT_FOLDER,
         non_roi_filename
     )
-
 
     if not cv2.imwrite(
         non_roi_path,
@@ -653,10 +776,10 @@ def encrypt():
     )
 
 
-    # =====================================================
+    # =============================
     # STEP 3
     # INTEGER HAAR DWT
-    # =====================================================
+    # =============================
 
     try:
 
@@ -680,9 +803,9 @@ def encrypt():
     )
 
 
-    # =====================================================
+    # =============================
     # VERIFY DWT / IDWT REVERSIBILITY
-    # =====================================================
+    # =============================
 
     try:
 
@@ -723,9 +846,9 @@ def encrypt():
     )
 
 
-    # =====================================================
+    # =============================
     # SAVE DWT LL
-    # =====================================================
+    # =============================
 
     dwt_ll_filename = (
         "dwt_ll_"
@@ -738,16 +861,15 @@ def encrypt():
         dwt_ll_filename
     )
 
-
     cv2.imwrite(
         dwt_ll_path,
         normalize_image(LL)
     )
 
 
-    # =====================================================
+    # =============================
     # SAVE DWT LH
-    # =====================================================
+    # =============================
 
     dwt_lh_filename = (
         "dwt_lh_"
@@ -760,16 +882,15 @@ def encrypt():
         dwt_lh_filename
     )
 
-
     cv2.imwrite(
         dwt_lh_path,
         normalize_image(LH)
     )
 
 
-    # =====================================================
+    # =============================
     # SAVE DWT HL
-    # =====================================================
+    # =============================
 
     dwt_hl_filename = (
         "dwt_hl_"
@@ -782,16 +903,15 @@ def encrypt():
         dwt_hl_filename
     )
 
-
     cv2.imwrite(
         dwt_hl_path,
         normalize_image(HL)
     )
 
 
-    # =====================================================
+    # =============================
     # SAVE DWT HH
-    # =====================================================
+    # =============================
 
     dwt_hh_filename = (
         "dwt_hh_"
@@ -804,7 +924,6 @@ def encrypt():
         dwt_hh_filename
     )
 
-
     cv2.imwrite(
         dwt_hh_path,
         normalize_image(HH)
@@ -816,10 +935,10 @@ def encrypt():
     )
 
 
-    # =====================================================
+    # =============================
     # STEP 4
     # RDH EMBEDDING
-    # =====================================================
+    # =============================
 
     try:
 
@@ -863,13 +982,12 @@ def encrypt():
         "RDH embedding successful."
     )
 
-
     rdh_metadata_store = rdh_metadata
 
 
-    # =====================================================
+    # =============================
     # SAVE RDH METADATA
-    # =====================================================
+    # =============================
 
     metadata_filename = (
         "rdh_metadata_"
@@ -881,7 +999,6 @@ def encrypt():
         OUTPUT_FOLDER,
         metadata_filename
     )
-
 
     try:
 
@@ -907,10 +1024,10 @@ def encrypt():
     )
 
 
-    # =====================================================
+    # =============================
     # STEP 5
     # INTEGER IDWT
-    # =====================================================
+    # =============================
 
     try:
 
@@ -937,9 +1054,9 @@ def encrypt():
     )
 
 
-    # =====================================================
+    # =============================
     # CHECK PIXEL RANGE
-    # =====================================================
+    # =============================
 
     minimum = int(
         idwt_image.min()
@@ -949,14 +1066,12 @@ def encrypt():
         idwt_image.max()
     )
 
-
     print(
         "Final IDWT range:",
         minimum,
         "to",
         maximum
     )
-
 
     if minimum < 0 or maximum > 255:
 
@@ -970,19 +1085,19 @@ def encrypt():
         )
 
 
-    # =====================================================
+    # =============================
     # SAFE CONVERSION
-    # =====================================================
+    # =============================
 
     stego_image = idwt_image.astype(
         np.uint8
     )
 
 
-    # =====================================================
+    # =============================
     # STEP 6
     # SAVE IDWT IMAGE
-    # =====================================================
+    # =============================
 
     idwt_filename = (
         "idwt_"
@@ -994,7 +1109,6 @@ def encrypt():
         OUTPUT_FOLDER,
         idwt_filename
     )
-
 
     if not cv2.imwrite(
         idwt_path,
@@ -1013,10 +1127,10 @@ def encrypt():
     )
 
 
-    # =====================================================
+    # =============================
     # STEP 7
     # SAVE FINAL STEGO IMAGE
-    # =====================================================
+    # =============================
 
     stego_filename = (
         "stego_"
@@ -1031,7 +1145,6 @@ def encrypt():
         stego_filename
     )
 
-
     if not cv2.imwrite(
         stego_path,
         stego_image
@@ -1043,9 +1156,9 @@ def encrypt():
         )
 
 
-    # =====================================================
+    # =============================
     # VERIFY STEGO FILE
-    # =====================================================
+    # =============================
 
     if not os.path.isfile(
         stego_path
@@ -1091,17 +1204,14 @@ def encrypt():
     print("========================================")
 
 
-    # =====================================================
+    # =============================
     # STEP 8
     # IMAGE QUALITY METRICS
-    #
-    # Original vs Stego
-    # =====================================================
+    # =============================
 
     mse = None
     psnr = None
     ssim_value = None
-
 
     try:
 
@@ -1109,7 +1219,6 @@ def encrypt():
             original_output_path,
             stego_path
         )
-
 
         if isinstance(
             metrics_result,
@@ -1128,7 +1237,6 @@ def encrypt():
                 "SSIM"
             )
 
-
         elif (
             isinstance(
                 metrics_result,
@@ -1144,7 +1252,6 @@ def encrypt():
 
             ssim_value = metrics_result[2]
 
-
     except Exception as e:
 
         print(
@@ -1153,26 +1260,14 @@ def encrypt():
         )
 
 
-    # =====================================================
+    # =============================
     # STEP 9
     # EXACT RECOVERY VERIFICATION
-    # =====================================================
-    #
-    # IMPORTANT:
-    #
-    # New RDH metadata uses:
-    #
-    # positions
-    # original_values
-    #
-    # NOT original_lsb.
-    #
-    # =====================================================
+    # =============================
 
     local_exact_recovery = False
 
     recovered_image = None
-
 
     try:
 
@@ -1185,7 +1280,6 @@ def encrypt():
             "original_values",
             []
         )
-
 
         if len(positions) != len(
             original_values
@@ -1201,9 +1295,9 @@ def encrypt():
         recovered_HH = HH_embedded.copy()
 
 
-        # -------------------------------------------------
+        # ==========================
         # Restore original HH coefficients
-        # -------------------------------------------------
+        # ==========================
 
         for i, position in enumerate(
             positions
@@ -1225,9 +1319,9 @@ def encrypt():
             )
 
 
-        # -------------------------------------------------
+        # ==========================
         # Reconstruct original image
-        # -------------------------------------------------
+        # ==========================
 
         recovered_image = integer_idwt2(
 
@@ -1242,9 +1336,9 @@ def encrypt():
         )
 
 
-        # -------------------------------------------------
+        # ==========================
         # Exact equality
-        # -------------------------------------------------
+        # ==========================
 
         local_exact_recovery = np.array_equal(
 
@@ -1270,9 +1364,9 @@ def encrypt():
     )
 
 
-    # =====================================================
+    # =============================
     # RECOVERY METRICS
-    # =====================================================
+    # =============================
 
     recovery_mse = None
     recovery_psnr = None
@@ -1326,9 +1420,9 @@ def encrypt():
             )
 
 
-    # =====================================================
+    # =============================
     # SAVE PROCESS INFORMATION
-    # =====================================================
+    # =============================
 
     info_filename = (
         "process_info_"
@@ -1425,9 +1519,50 @@ def encrypt():
         )
 
 
-    # =====================================================
+    # =============================
+    # CREATE TRANSMISSION ZIP
+    # =============================
+    #
+    # ZIP contains ONLY:
+    #
+    #   stego_image.png
+    #   original_image.png
+    #   metadata.json
+    #
+    # =============================
+
+    try:
+
+        transmission_zip_store = (
+            create_transmission_zip(
+                stego_path,
+                original_output_path,
+                metadata_path,
+                process_id
+            )
+        )
+
+    except Exception as e:
+
+        print(
+            "Transmission ZIP creation failed:",
+            str(e)
+        )
+
+        transmission_zip_store = None
+
+        return render_template(
+            "result.html",
+            error=(
+                "Transmission ZIP creation failed: "
+                + str(e)
+            )
+        )
+
+
+    # =============================
     # PRINT GENERATED FILES
-    # =====================================================
+    # =============================
 
     print()
     print("========================================")
@@ -1489,20 +1624,22 @@ def encrypt():
         info_path
     )
 
+    print(
+        "Transmission ZIP:",
+        os.path.join(
+            TRANSMISSION_FOLDER,
+            transmission_zip_store
+        )
+    )
+
     print("========================================")
     print("TRANSMITTER PROCESS COMPLETED")
     print("========================================")
 
 
-    # =====================================================
+    # =============================
     # RESULT PAGE
-    # =====================================================
-    #
-    # ONLY THE STEGO IMAGE IS DISPLAYED.
-    #
-    # Intermediate images remain in output/.
-    #
-    # =====================================================
+    # =============================
 
     return render_template(
 
@@ -1516,8 +1653,6 @@ def encrypt():
 
         stego_filename=stego_filename,
 
-        # Also provide stego_image for compatibility
-        # with an older result.html.
         stego_image=(
             "/output/"
             +
@@ -1544,13 +1679,16 @@ def encrypt():
 
         metadata_filename=(
             metadata_filename
-        )
+        ),
+
+        transmission_zip_available=True
+
     )
 
 
-# =========================================================
+# =============================
 # LOCAL AES DECRYPTION DEMO
-# =========================================================
+# =============================
 
 @app.route(
     "/decrypt",
@@ -1571,9 +1709,9 @@ def decrypt():
     )
 
 
-    # =====================================================
+    # =============================
     # CHECK PASSWORD
-    # =====================================================
+    # =============================
 
     if not password:
 
@@ -1583,9 +1721,9 @@ def decrypt():
         )
 
 
-    # =====================================================
+    # =============================
     # CHECK STORED DATA
-    # =====================================================
+    # =============================
 
     if (
         salt_store is None
@@ -1604,92 +1742,32 @@ def decrypt():
         )
 
 
-    # =====================================================
-    # AES DECRYPTION
-    # =====================================================
-
-    try:
-
-        decrypted = decrypt_data(
-
-            salt_store,
-
-            iv_store,
-
-            cipher_store,
-
-            password
-
-        )
-
-    except Exception:
-
-        return render_template(
-            "result.html",
-            error=(
-                "Decryption failed. "
-                "Wrong password or invalid encrypted data."
-            )
-        )
-
-
-    print()
-    print(
-        "AES-256 decryption successful."
-    )
-
-    print(
-        "Recovered Patient Data:"
-    )
-
-    print(
-        decrypted
-    )
-
-
-    # =====================================================
-    # RECREATE ENCRYPTED TEXT
-    # =====================================================
-
-    encrypted_package = (
-
-        salt_store
-        +
-        iv_store
-        +
-        cipher_store
-    )
-
-
-    encrypted_text = base64.b64encode(
-        encrypted_package
-    ).decode()
-
-
-    # =====================================================
+    # =============================
     # KEEP STEGO IMAGE
-    # =====================================================
+    # =============================
 
     stego_filename = (
         stego_filename_store
     )
 
 
-    # =====================================================
+    # =============================
     # DISPLAY DECRYPTION RESULT
-    # =====================================================
+    # =============================
 
     return render_template(
 
         "result.html",
 
-        status=(
-            "AES-256 Decryption Successful"
+        encrypted_data=(
+            base64.b64encode(
+                salt_store
+                +
+                iv_store
+                +
+                cipher_store
+            ).decode()
         ),
-
-        encrypted_data=encrypted_text,
-
-        decrypted_data=decrypted,
 
         stego_filename=stego_filename,
 
@@ -1711,9 +1789,9 @@ def decrypt():
     )
 
 
-# =========================================================
+# =============================
 # RUN
-# =========================================================
+# =============================
 
 if __name__ == "__main__":
 
