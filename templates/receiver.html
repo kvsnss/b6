@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+
 <html lang="en">
 
 <head>
@@ -26,10 +27,6 @@
 
 <div class="container">
 
-    <!-- =================================================
-         HEADER
-         ================================================= -->
-
     <h1>
         Raspberry Pi Medical Data Receiver
     </h1>
@@ -40,45 +37,77 @@
 
 
     <!-- =================================================
-         STATUS
+         STATUS MESSAGE
          ================================================= -->
 
     {% if status %}
 
     <div class="status">
+
         {{ status }}
+
     </div>
 
     {% endif %}
 
 
     <!-- =================================================
-         ERROR
+         ERROR MESSAGE
          ================================================= -->
 
     {% if error %}
 
     <div class="error">
+
         {{ error }}
+
+    </div>
+
+    {% endif %}
+
+
+    {% if extraction_error %}
+
+    <div class="error">
+
+        RDH Extraction Error:
+        {{ extraction_error }}
+
+    </div>
+
+    {% endif %}
+
+
+    {% if decryption_error %}
+
+    <div class="error">
+
+        AES Decryption Error:
+        {{ decryption_error }}
+
     </div>
 
     {% endif %}
 
 
     <!-- =================================================
-         RECEIVED FILES
+         RECEIVE TRANSMISSION ZIP
          ================================================= -->
 
     <div class="section">
 
         <h2>
-            Received Files
+            Receive Secure Transmission
         </h2>
 
         <p>
-            The Raspberry Pi receiver has access to the
-            files stored in the
-            <strong>received</strong> folder.
+            Upload the
+            <strong>transmission.zip</strong>
+            received from the transmitter.
+        </p>
+
+        <p>
+            The ZIP file must contain:
         </p>
 
         <div class="file-list">
@@ -97,37 +126,26 @@
 
         </div>
 
-    </div>
-
-
-    <!-- =================================================
-         PROCESS RECEIVED IMAGE
-         ================================================= -->
-
-    <div class="image-section">
-
-        <h2>
-            Reversible Data Extraction
-        </h2>
-
-        <p>
-            The received stego medical image is processed
-            using DWT-based reversible data hiding.
-        </p>
-
-        <p>
-            The encrypted medical payload is extracted
-            and the original medical image is recovered.
-        </p>
-
 
         <form
-            action="{{ url_for('process') }}"
+            action="{{ url_for('upload_transmission') }}"
             method="POST"
+            enctype="multipart/form-data"
         >
 
+            <input
+                type="file"
+                name="transmission_zip"
+                accept=".zip"
+                required
+            >
+
+            <br><br>
+
             <button type="submit">
-                Process Received Stego Image
+
+                Upload Transmission ZIP
+
             </button>
 
         </form>
@@ -136,7 +154,99 @@
 
 
     <!-- =================================================
-         STEGO IMAGE
+         RECEIVED FILES
+         ================================================= -->
+
+    {% if stego_available %}
+
+    <div class="section">
+
+        <h2>
+            Transmission Files Received
+        </h2>
+
+        <p>
+            The transmission ZIP has been successfully
+            extracted into the
+            <strong>received</strong>
+            folder.
+        </p>
+
+        <div class="file-list">
+
+            {% if stego_available %}
+
+            <p>
+                ✓ <strong>stego_image.png</strong>
+            </p>
+
+            {% endif %}
+
+
+            {% if recovered_available or
+                  original_image_available %}
+
+            <p>
+                ✓ <strong>original_image.png</strong>
+            </p>
+
+            {% endif %}
+
+
+            <p>
+                ✓ <strong>metadata.json</strong>
+            </p>
+
+        </div>
+
+    </div>
+
+    {% endif %}
+
+
+<!-- =================================================
+         PROCESS RECEIVED IMAGE
+         ================================================= -->
+
+         {% if stego_available %}
+
+         <div class="image-section">
+     
+             <h2>
+                 Reversible Data Extraction
+             </h2>
+     
+             <p>
+                 The received stego medical image is processed
+                 using DWT-based reversible data hiding.
+             </p>
+     
+             <p>
+                 The encrypted medical payload is extracted
+                 and the original medical image is recovered.
+             </p>
+     
+     
+             <form
+                 action="{{ url_for('process') }}"
+                 method="POST"
+             >
+     
+                 <button type="submit">
+     
+                     Process Received Stego Image
+     
+                 </button>
+     
+             </form>
+     
+         </div>
+     
+         {% endif %}
+     
+
+    <!-- =================================================
+         RECEIVED STEGO IMAGE
          ================================================= -->
 
     {% if filename %}
@@ -144,7 +254,7 @@
     <div class="info">
 
         <strong>
-            Processed Stego File:
+            Received Stego File:
         </strong>
 
         {{ filename }}
@@ -159,7 +269,10 @@
         </h2>
 
         <img
-            src="{{ url_for('received_image', filename=filename) }}"
+            src="{{ url_for(
+                'received_image',
+                filename=filename
+            ) }}"
             alt="Received Stego Medical Image"
         >
 
@@ -169,7 +282,7 @@
 
 
     <!-- =================================================
-         EXTRACTION RESULT
+         EXTRACTION SUCCESS
          ================================================= -->
 
     {% if extracted %}
@@ -233,29 +346,48 @@
             </p>
 
             <p>
-                <strong>Exact Recovery:</strong>
+
+                <strong>
+                    Exact Recovery:
+                </strong>
 
                 {% if metrics.exact_recovery %}
+
                     Yes
+
                 {% else %}
+
                     No
+
                 {% endif %}
 
             </p>
 
             <p>
-                <strong>Different Pixels:</strong>
+                <strong>
+                    Different Pixels:
+                </strong>
+
                 {{ metrics.different_pixels }}
+
             </p>
 
             <p>
-                <strong>Total Pixels:</strong>
+                <strong>
+                    Total Pixels:
+                </strong>
+
                 {{ metrics.total_pixels }}
+
             </p>
 
             <p>
-                <strong>Pixel Error Rate:</strong>
+                <strong>
+                    Pixel Error Rate:
+                </strong>
+
                 {{ metrics.pixel_error_rate }}
+
             </p>
 
         </div>
@@ -266,7 +398,7 @@
 
 
     <!-- =================================================
-         DECRYPTION
+         AES-256 DECRYPTION
          ================================================= -->
 
     <div class="image-section">
@@ -276,8 +408,8 @@
         </h2>
 
         <p>
-            Enter the same password that was used during
-            encryption at the sender.
+            Enter the same password that was used
+            during encryption at the transmitter.
         </p>
 
 
@@ -316,7 +448,7 @@
 
 
     <!-- =================================================
-         DECRYPTED DATA
+         DECRYPTED PATIENT DATA
          ================================================= -->
 
     {% if decrypted_data %}
@@ -351,4 +483,3 @@
 </body>
 
 </html>
-
